@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>フルコンボの宴 - 太鼓のリズムゲーム</title>
+  <style>
+    * { touch-action: manipulation; user-select: none; margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; color: #fff; font-family: sans-serif; text-align: center; overflow: hidden; }
+    canvas { background: #222; display: block; margin: 10px auto; border: 4px solid #fff; border-radius: 8px; max-width: 100%; }
+    .controls { display: flex; justify-content: center; gap: 10px; margin-top: 5px; }
+    button { padding: 15px 25px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; color: white; cursor: pointer; }
+    .btn-start { background: #2ed573; font-size: 20px; padding: 10px 30px; margin-bottom: 5px; }
+    .btn-don { background: #ff4757; }
+    .btn-ka { background: #1e90ff; }
+    button:active { transform: scale(0.95); opacity: 0.8; }
+  </style>
+</head>
+<body>
+
+  <h1>フルコンボの宴</h1>
+  <button class="btn-start" onclick="startGame()">ゲームスタート / BGM再生</button>
+  <p>スコア: <span id="score">0</span> | コンボ: <span id="combo">0</span></p>
+  <p id="judgment" style="height: 24px; font-weight: bold; font-size: 20px; color: #ffda79;"></p>
+
+  <canvas id="gameCanvas" width="800" height="200"></canvas>
+
+  <div class="controls">
+    <button class="btn-ka" onclick="hit('ka')">カッ (D/K)</button>
+    <button class="btn-don" onclick="hit('don')">ドン (F/J)</button>
+    <button class="btn-ka" onclick="hit('ka')">カッ (D/K)</button>
+  </div>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+const TARGET_X = 120;
+const TARGET_Y = 100;
+const RADIUS = 30;
+const NOTE_SPEED = 0.4; // 1ミリ秒あたりのピクセル移動速度
+
+let score = 0;
+let combo = 0;
+let notes = [];
+let isPlaying = false;
+let startTime = 0;
+
+// 『フルコンボの宴』風 譜面データ (秒単位)
+const chartData = [
+  { time: 1.6, type: "don" }, { time: 2.0, type: "don" }, { time: 2.4, type: "ka" },
+  { time: 3.2, type: "don" }, { time: 3.6, type: "don" }, { time: 4.0, type: "ka" },
+  { time: 4.8, type: "don" }, { time: 5.0, type: "don" }, { time: 5.2, type: "don" }, { time: 5.6, type: "ka" },
+  { time: 6.4, type: "don" }, { time: 6.8, type: "ka" }, { time: 7.2, type: "don" }, { time: 7.6, type: "ka" },
+  { time: 8.4, type: "don" }, { time: 8.8, type: "don" }, { time: 9.2, type: "don" }, { time: 9.6, type: "ka" }
+];
+
+// Web Audio API によるサウンド再生設定
+let audioCtx = null;
+
+function playSound(freq, type, duration) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+  gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
+}
+
+// BGM風フレーズの自動生成再生
+function startBGM() {
+  const bpm = 150;
+  const step = (60 / bpm) / 2; // 8分音符
+  const notesFreq = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25]; // 和風メロディ
+
+  let i = 0;
+  const interval = setInterval(() => {
+    if (!isPlaying) { clearInterval(interval); return; }
+    const freq = notesFreq[i % notesFreq.length];
+    playSound(freq, "triangle", 0.2);
+    i++;
+  }, step * 1000);
+}
+
+function startGame() {
+  if (isPlaying) return;
+  
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  isPlaying = true;
+  startTime = performance.now();
+  score = 0;
+  combo = 0;
+  updateUI();
+
+  // 譜面データをノーツオブジェクトに変換
+  notes = chartData.map(n => ({
+    targetTime: n.time * 1000,
+    type: n.type,
+    hit: false
+  }));
+
+  startBGM();
+  requestAnimationFrame(update);
+}
+
+// 判定処理
+function hit(type) {
+  if (!isPlaying) return;
+  const currentTime = performance.now() - startTime;
+
+  // 太鼓の打撃音
+  if (type === "don") playSound(120, "sine", 0.15);
+  if (type === "ka") playSound(400, "square", 0.08);
+
+  // 未ヒットで最も近いノーツを検索
+  const targetNote = notes.find(n => !n.hit && Math.abs(currentTime - n.targetTime) < 150);
+
+  if (targetNote) {
+    const diff = Math.abs(currentTime - targetNote.targetTime);
+    targetNote.hit = true;
+
+    if (targetNote.type === type) {
+      if (diff < 50) {
+        showJudgment("良！", "#fffa65");
+        score += 300;
+      } else {
+        showJudgment("可", "#ffffff");
+        score += 100;
+      }
+      combo++;
+    } else {
+      showJudgment("不可...", "#ff4d4d");
+      combo = 0;
+    }
+    updateUI();
+  }
+}
+
+function showJudgment(text, color) {
+  const el = document.getElementById("judgment");
+  el.textContent = text;
+  el.style.color = color;
+}
+
+function updateUI() {
+  document.getElementById("score").textContent = score;
+  document.getElementById("combo").textContent = combo;
+}
+
+// キーボード操作
+window.addEventListener("keydown", (e) => {
+  if (e.repeat) return;
+  if (e.key === "f" || e.key === "j" || e.key === "F" || e.key === "J") hit("don");
+  if (e.key === "d" || e.key === "k" || e.key === "D" || e.key === "K") hit("ka");
+});
+
+// メイン描写ループ
+function update() {
+  if (!isPlaying) return;
+  const currentTime = performance.now() - startTime;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // レーン描画
+  ctx.fillStyle = "#333";
+  ctx.fillRect(0, 50, canvas.width, 100);
+
+  // 判定枠
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(TARGET_X, TARGET_Y, RADIUS, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // ノーツ描画
+  for (let i = 0; i < notes.length; i++) {
+    let n = notes[i];
+    if (n.hit) continue;
+
+    // 時間に基づくX座標計算
+    const timeDiff = n.targetTime - currentTime;
+    const x = TARGET_X + (timeDiff * NOTE_SPEED);
+
+    if (x > -RADIUS && x < canvas.width + RADIUS) {
+      ctx.beginPath();
+      ctx.arc(x, TARGET_Y, RADIUS - 2, 0, Math.PI * 2);
+      ctx.fillStyle = n.type === "don" ? "#ff4757" : "#1e90ff";
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // 見逃し（不可）判定
+    if (timeDiff < -150 && !n.hit) {
+      n.hit = true;
+      showJudgment("不可...", "#ff4d4d");
+      combo = 0;
+      updateUI();
+    }
+  }
+
+  requestAnimationFrame(update);
+}
+</script>
+</body>
+</html>
